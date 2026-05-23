@@ -1,0 +1,7 @@
+import asyncio
+
+HTTP_TIMEOUT = 10
+WS_RECONNECT_DELAY = 5
+MAX_CONCURRENT_REQUESTS = 10
+
+rate_limiter = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)

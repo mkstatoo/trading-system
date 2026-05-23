@@ -19,11 +19,11 @@ python -m venv venv
 venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 copy .env.example .env         # کلید API را وارد کنید
-uvicorn app.main:app --reload
+uvicorn app.main:app --host 127.0.0.1 --port 7000 --reload
 ```
 
-- API: http://127.0.0.1:8000  
-- مستندات: http://127.0.0.1:8000/docs  
+- داشبورد: http://127.0.0.1:7000  
+- مستندات: http://127.0.0.1:7000/docs  
 
 ## اندپوینت‌های مهم
 
@@ -35,10 +35,28 @@ uvicorn app.main:app --reload
 | `GET /trading/positions` | پوزیشن‌های باز |
 | `POST /trading/order` | سفارش دستی Paper |
 
-## استراتژی Bull Hunter
+## بازارها (Top 300)
 
-سیگنال **خرید** وقتی قیمت آخر بیش از `open` به اندازه `BULL_HUNTER_MOMENTUM_PCT` درصد رشد کند.  
-حجم پوزیشن: `INITIAL_BALANCE × RISK_PER_TRADE / last_price`.
+پیش‌فرض: **`SYMBOL_MODE=top300`** — ربات هر دور، **۳۰۰ جفت USDT** با بیشترین حجم ۲۴ساعته CoinEx را اسکن می‌کند (نه فقط BTC/ETH).  
+لیست هر `TOP_MARKETS_REFRESH_HOURS` ساعت به‌روز می‌شود.  
+برای لیست دستی: `SYMBOL_MODE=manual` و `TRADING_SYMBOLS=BTCUSDT,ETHUSDT,...`
+
+## استراتژی Bull Hunter (T1–T8)
+
+اسکن **Top 300** آلت‌کوین USDT؛ سیگنال **خرید** فقط وقتی **هر ۸ فیلتر PASS** باشند:
+
+| فیلتر | شرط |
+|--------|------|
+| T1 | حجم ۲۴ساعته ≥ ۵× میانگین روزهای قبل |
+| T2 | RSI(7) بین ۴۵–۷۰ |
+| T3 | MACD histogram مثبت |
+| T4 | شکست باند بالای بولینگر |
+| T5 | قیمت بالاتر از VWAP |
+| T6 | بدون سیگنال در ۵ روز اخیر |
+| T7 | EMA20 > EMA50 (روزانه) |
+| T8 | آزاد شدن فشردگی نوسان (BB/ATR) |
+
+تست یک نماد: `GET /strategy/evaluate/BTCUSDT`
 
 ## متغیرهای محیطی
 

@@ -1,47 +1,71 @@
+import asyncio
 from typing import Optional
 
 from app.strategies.base import BaseStrategy
+from app.strategies.filters import run_all_filters, is_trade_allowed, FilterReport
+from app.exchanges.coinex.kline import fetch_klines
+from app.storage import signal_history
 from app.core.settings import settings
+from app.core.logger import setup_logger
+
+logger = setup_logger()
 
 
 class BullHunterStrategy(BaseStrategy):
     """
-    Momentum strategy (Bull Hunter):
-    BUY when price rises above open by momentum_pct%.
-  Position size = portfolio_notional * RISK_PER_TRADE / last_price.
+    Bull Hunter — تشخیص بازار گاوی با ۸ فیلتر (T1–T8) روی آلت‌های Top N.
+    همه فیلترها باید PASS باشند تا سیگنال BUY صادر شود.
     """
 
-    def __init__(
-        self,
-        momentum_pct: float | None = None,
-        notional_base: float | None = None,
-    ):
-        self.momentum_pct = momentum_pct or settings.BULL_HUNTER_MOMENTUM_PCT
+    def __init__(self, notional_base: float | None = None):
         self.notional_base = notional_base or settings.INITIAL_BALANCE
+
+    async def evaluate(self, market_data: dict) -> FilterReport | None:
+        market = market_data.get("market", "")
+        if not market:
+            return None
+
+        hourly_task = fetch_klines(
+            market, "1hour", settings.KLINE_HOURLY_LIMIT
+        )
+        daily_task = fetch_klines(market, "1day", settings.KLINE_DAILY_LIMIT)
+        hourly_klines, daily_klines = await asyncio.gather(hourly_task, daily_task)
+
+        if len(hourly_klines) < 30 or len(daily_klines) < 10:
+            return None
+
+        recent = signal_history.has_recent_signal(market)
+        return run_all_filters(market, market_data, hourly_klines, daily_klines, recent)
 
     async def analyze(self, market_data: dict) -> Optional[dict]:
         try:
-            last_price = float(market_data.get("last", 0))
-            open_price = float(market_data.get("open", 0) or last_price)
-        except (TypeError, ValueError):
-            return None
+            report = await self.evaluate(market_data)
+            if report is None:
+                return None
 
-        if last_price <= 0 or open_price <= 0:
-            return None
+            if not is_trade_allowed(report):
+                return None
 
-        change_pct = ((last_price - open_price) / open_price) * 100
+            last_price = float(market_data.get("last", 0) or 0)
+            if last_price <= 0:
+                return None
 
-        if change_pct >= self.momentum_pct:
             risk_per_trade = settings.RISK_PER_TRADE
             amount = round((self.notional_base * risk_per_trade) / last_price, 8)
             if amount <= 0:
                 return None
+
+            report_dict = report.to_dict()
+            signal_history.record_signal(report.market, report_dict)
+
             return {
-                "symbol": market_data.get("market", ""),
+                "symbol": report.market,
                 "price": last_price,
                 "amount": amount,
                 "side": "buy",
-                "reason": f"momentum {change_pct:.2f}% >= {self.momentum_pct}%",
+                "reason": f"Bull Hunter T1–T8 ({report.passed_count}/8)",
+                "filters": report_dict,
             }
-
-        return None
+        except Exception as e:
+            logger.error("bull hunter analyze error [%s]: %s", market_data.get("market"), e)
+            return None

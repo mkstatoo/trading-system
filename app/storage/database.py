@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, String, Float, DateTime, Integer
+from sqlalchemy import create_engine, Column, String, Float, DateTime, Integer, Boolean, Text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy.sql import func
 from app.core.settings import settings
@@ -13,6 +13,16 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 class Base(DeclarativeBase):
     pass
+
+
+class SignalHistoryModel(Base):
+    __tablename__ = "signal_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    market = Column(String, index=True)
+    passed = Column(Boolean, default=True)
+    filters_json = Column(Text, default="{}")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class TradeModel(Base):

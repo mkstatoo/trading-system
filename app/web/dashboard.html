@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>trading-system</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: Tahoma, system-ui, sans-serif;
+      background: #0f1419;
+      color: #e7e9ea;
+      min-height: 100vh;
+      padding: 1.5rem;
+    }
+    .wrap { max-width: 640px; margin: 0 auto; }
+    h1 { color: #f7931a; font-size: 1.6rem; margin-bottom: 0.25rem; }
+    .sub { color: #8b98a5; font-size: 0.9rem; margin-bottom: 1.25rem; }
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.75rem;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+    }
+    .ok { background: #1d3a2f; color: #00ba7c; }
+    .warn { background: #3a2f1d; color: #f7931a; }
+    .panel {
+      background: #1a2332;
+      border: 1px solid #2f3b4d;
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.45rem 0;
+      border-bottom: 1px solid #2f3b4d;
+      font-size: 0.9rem;
+    }
+    .row:last-child { border: none; }
+    .label { color: #8b98a5; }
+    a.btn {
+      display: block;
+      text-align: center;
+      padding: 0.75rem;
+      margin-bottom: 0.5rem;
+      border-radius: 10px;
+      font-weight: 600;
+      text-decoration: none;
+      color: #0f1419;
+      background: #f7931a;
+    }
+    a.btn.secondary { background: #2f3b4d; color: #e7e9ea; }
+    .err { color: #f4212e; font-size: 0.85rem; margin-top: 0.5rem; display: none; }
+    .err.show { display: block; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>trading-system</h1>
+    <p class="sub">ربات معاملاتی CoinEx — استراتژی Bull Hunter</p>
+    <span class="badge ok" id="statusBadge">در حال بارگذاری...</span>
+
+    <div class="panel">
+      <div class="row"><span class="label">حالت</span><span id="mode">—</span></div>
+      <div class="row"><span class="label">موتور معاملات</span><span id="engine">—</span></div>
+      <div class="row"><span class="label">بازارها</span><span id="symbols">—</span></div>
+      <div class="row"><span class="label">اسکن آخرین دور</span><span id="scanned">—</span></div>
+      <div class="row"><span class="label">موجودی Paper (USDT)</span><span id="balance">—</span></div>
+      <div class="row"><span class="label">پوزیشن باز</span><span id="openTrades">—</span></div>
+      <div class="row"><span class="label">سیگنال / معامله</span><span id="counts">—</span></div>
+      <div class="row"><span class="label">آخرین اسکن</span><span id="lastScan">—</span></div>
+    </div>
+
+    <a class="btn" href="/docs">مستندات API (Swagger)</a>
+    <a class="btn secondary" href="/api">اطلاعات JSON</a>
+
+    <p class="err" id="errorBox"></p>
+  </div>
+  <script>
+    async function refresh() {
+      const err = document.getElementById('errorBox');
+      try {
+        const [health, status, bal] = await Promise.all([
+          fetch('/health').then(r => r.json()),
+          fetch('/status').then(r => r.json()),
+          fetch('/paper/balance').then(r => r.json()),
+        ]);
+        err.classList.remove('show');
+        const eng = health.engine || status;
+        document.getElementById('statusBadge').textContent = health.status === 'ok' ? 'آنلاین' : 'خطا';
+        document.getElementById('mode').textContent =
+          (health.paper_trading ? 'Paper' : 'Live') + (health.auto_trading ? ' + خودکار' : '');
+        document.getElementById('engine').textContent = eng.running ? 'فعال' : 'متوقف';
+        const mode = eng.symbol_mode || 'top300';
+        const n = eng.symbols_count ?? (eng.symbols || []).length;
+        const preview = (eng.symbols_preview || eng.symbols || []).slice(0, 5).join('، ');
+        document.getElementById('symbols').textContent =
+          mode === 'top300' ? ('Top ' + n + ' USDT — ' + preview + '…') : ((eng.symbols || []).join('، ') || '—');
+        document.getElementById('scanned').textContent = eng.scanned_last_cycle ?? '—';
+        const usdt = bal?.data?.USDT?.available;
+        document.getElementById('balance').textContent = usdt != null ? Number(usdt).toLocaleString('fa-IR') : '—';
+        document.getElementById('openTrades').textContent = eng.open_trades ?? '—';
+        document.getElementById('counts').textContent =
+          (eng.signals_count ?? 0) + ' / ' + (eng.trades_count ?? 0);
+        document.getElementById('lastScan').textContent = eng.last_scan_at || '—';
+      } catch (e) {
+        err.textContent = 'سرور در دسترس نیست. ابتدا uvicorn را اجرا کنید: uvicorn app.main:app --port 7000';
+        err.classList.add('show');
+        document.getElementById('statusBadge').className = 'badge warn';
+        document.getElementById('statusBadge').textContent = 'آفلاین';
+      }
+    }
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

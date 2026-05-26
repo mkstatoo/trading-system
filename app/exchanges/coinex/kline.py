@@ -22,11 +22,18 @@ async def fetch_klines(
     period: str = "1hour",
     limit: int = 100,
     session: aiohttp.ClientSession | None = None,
+    *,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
 ) -> list[dict]:
-    """CoinEx spot klines — public endpoint."""
+    """CoinEx spot klines — public endpoint (start_time/end_time in milliseconds)."""
     path = "/v2/spot/kline"
     url = settings.COINEX_BASE_URL + path
-    params = {"market": market, "period": period, "limit": limit}
+    params: dict = {"market": market, "period": period, "limit": limit}
+    if start_ms is not None:
+        params["start_time"] = start_ms
+    if end_ms is not None:
+        params["end_time"] = end_ms
     owns_session = session is None
     if owns_session:
         session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
@@ -39,6 +46,13 @@ async def fetch_klines(
                 logger.warning("kline error [%s %s]: %s", market, period, data)
                 return []
             rows = data.get("data") or []
+            for row in rows:
+                ts = int(row.get("created_at", 0))
+                if ts > 10_000_000_000_000:
+                    ts //= 1000
+                elif ts < 10_000_000_000:
+                    ts *= 1000
+                row["created_at"] = ts
             return sorted(rows, key=lambda x: x.get("created_at", 0))
         except Exception as e:
             logger.error("kline fetch failed [%s %s]: %s", market, period, e)

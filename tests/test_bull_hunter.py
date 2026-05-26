@@ -8,7 +8,7 @@ from app.strategies.filters import FilterReport, FilterResult, FilterStatus
 def _make_report(market: str, all_pass: bool) -> FilterReport:
     status = FilterStatus.PASS if all_pass else FilterStatus.FAIL
     results = [
-        FilterResult(f"T{i}", f"test{i}", status, "ok") for i in range(1, 9)
+        FilterResult(f"T{i}", f"test{i}", status, "ok") for i in range(0, 9)
     ]
     return FilterReport(market=market, results=results)
 

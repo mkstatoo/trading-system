@@ -17,6 +17,13 @@ venv/
 .env
 *.db
 trading.db
+data/
+optimize_results.json
+.backtest_2w_temp.py
+.diagnose_filters.py
+backtest_*.txt
+backtest_*.json
+backtest_*.log
 
 # IDE
 .idea/

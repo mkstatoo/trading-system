@@ -3,22 +3,13 @@ import numpy as np
 from app.strategies.filters import (
     run_all_filters,
     is_trade_allowed,
+    counts_as_pass,
     FilterStatus,
+    FilterReport,
+    FilterResult,
     evaluate_t1_volume_ratio,
 )
 from app.strategies import indicators as ind
-
-
-def _hourly_closes(closes: list[float]) -> dict:
-    n = len(closes)
-    return {
-        "open": np.array(closes),
-        "high": np.array([c * 1.01 for c in closes]),
-        "low": np.array([c * 0.99 for c in closes]),
-        "close": np.array(closes),
-        "volume": np.ones(n) * 1000,
-        "value": np.ones(n) * 50000,
-    }
 
 
 def test_rsi_range():
@@ -34,6 +25,37 @@ def test_t1_volume_ratio_pass():
     daily.append({"value": "5000000"})
     r = evaluate_t1_volume_ratio(ticker, daily)
     assert r.status == FilterStatus.PASS
+
+
+def test_counts_as_pass_t2_warn():
+    r = FilterResult("T2", "t2", FilterStatus.WARN, "")
+    assert counts_as_pass(r) is True
+
+
+def test_is_trade_allowed_seven_of_nine():
+    results = [
+        FilterResult("T0", "t0", FilterStatus.PASS, ""),
+        FilterResult("T1", "t1", FilterStatus.PASS, ""),
+        FilterResult("T2", "t2", FilterStatus.WARN, ""),
+        FilterResult("T3", "t3", FilterStatus.PASS, ""),
+        FilterResult("T4", "t4", FilterStatus.PASS, ""),
+        FilterResult("T5", "t5", FilterStatus.PASS, ""),
+        FilterResult("T6", "t6", FilterStatus.PASS, ""),
+        FilterResult("T7", "t7", FilterStatus.FAIL, ""),
+        FilterResult("T8", "t8", FilterStatus.FAIL, ""),
+    ]
+    report = FilterReport(market="X", results=results)
+    assert is_trade_allowed(report) is True
+
+
+def test_is_trade_allowed_t1_fail_blocks():
+    results = [
+        FilterResult("T0", "t0", FilterStatus.PASS, ""),
+        FilterResult("T1", "t1", FilterStatus.FAIL, ""),
+        FilterResult("T2", "t2", FilterStatus.PASS, ""),
+    ] + [FilterResult(f"T{i}", "t", FilterStatus.PASS, "") for i in range(3, 9)]
+    report = FilterReport(market="X", results=results)
+    assert is_trade_allowed(report) is False
 
 
 def test_all_filters_synthetic_bull():
@@ -70,20 +92,13 @@ def test_all_filters_synthetic_bull():
         "last": str(closes_h[-1]),
         "value": "5000000",
     }
-    report = run_all_filters("TESTUSDT", ticker, hourly_klines, daily_klines, False)
-    assert report.passed_count >= 5
-    # ممکن است همه ۸ پاس نشوند — فقط ساختار را چک می‌کنیم
-    assert len(report.results) == 8
-
-
-def test_is_trade_allowed_strict():
-    from app.strategies.filters import FilterReport, FilterResult
-
-    report = FilterReport(
-        market="X",
-        results=[
-            FilterResult("T1", "t1", FilterStatus.PASS, ""),
-            FilterResult("T2", "t2", FilterStatus.WARN, ""),
-        ],
+    micro = [
+        {"close": "1.0", "created_at": 0},
+        {"close": "1.0", "created_at": 1},
+        {"close": "1.02", "created_at": 2},
+    ]
+    report = run_all_filters(
+        "TESTUSDT", ticker, hourly_klines, daily_klines, False, micro
     )
-    assert is_trade_allowed(report) is False
+    assert report.passed_count >= 5
+    assert len(report.results) == 9

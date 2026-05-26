@@ -35,6 +35,10 @@ class FilterReport:
 
     @property
     def passed_count(self) -> int:
+        return sum(1 for r in self.results if counts_as_pass(r))
+
+    @property
+    def strict_pass_count(self) -> int:
         return sum(1 for r in self.results if r.status == FilterStatus.PASS)
 
     def to_dict(self) -> dict:
@@ -54,26 +58,72 @@ class FilterReport:
         }
 
 
-def evaluate_t1_volume_ratio(ticker: dict, daily_klines: list[dict]) -> FilterResult:
-    name = "T1 — حجم نسبی ≥5×"
+def evaluate_t0_micro_momentum(micro_klines: list[dict]) -> FilterResult:
+    """رشد قیمت در ۲ دقیقه اخیر (دو کندل ۱ دقیقه‌ای)."""
+    candles = settings.T0_MICRO_CANDLES
+    name = f"T0 — رشد {candles} دقیقه (۱min)"
+    if len(micro_klines) < candles + 1:
+        return FilterResult("T0", name, FilterStatus.FAIL, "داده ۱min کافی نیست")
+    try:
+        p0 = float(micro_klines[-1 - candles]["close"])
+        p1 = float(micro_klines[-1]["close"])
+        if p0 <= 0:
+            return FilterResult("T0", name, FilterStatus.FAIL, "قیمت پایه صفر")
+        chg = ((p1 - p0) / p0) * 100
+        detail = f"{candles}m: {chg:+.2f}% ({p0:.6g} → {p1:.6g})"
+        if chg >= settings.T0_SPIKE_WARN_PCT:
+            return FilterResult("T0", name, FilterStatus.FAIL, f"{detail} — پامپ شدید")
+        if settings.T0_MIN_PCT <= chg <= settings.T0_MAX_PCT:
+            return FilterResult("T0", name, FilterStatus.PASS, detail)
+        if chg >= settings.T0_MIN_PCT:
+            return FilterResult("T0", name, FilterStatus.WARN, f"{detail} — بالای {settings.T0_MAX_PCT}%")
+        return FilterResult(
+            "T0",
+            name,
+            FilterStatus.FAIL,
+            f"{detail} — کمتر از {settings.T0_MIN_PCT}%",
+        )
+    except (TypeError, ValueError) as e:
+        return FilterResult("T0", name, FilterStatus.FAIL, str(e))
+
+
+def evaluate_t1_volume_ratio(
+    ticker: dict,
+    daily_klines: list[dict],
+    hourly_klines: list[dict] | None = None,
+) -> FilterResult:
+    name = f"T1 — حجم نسبی ≥{settings.T1_MIN_VOLUME_RATIO:.0f}×"
     try:
         current_value = float(ticker.get("value", 0) or 0)
         if not daily_klines or len(daily_klines) < 6:
             return FilterResult("T1", name, FilterStatus.FAIL, "داده روزانه کافی نیست")
         values = [float(k.get("value", 0) or 0) for k in daily_klines]
-        # میانگین حجم روزانه قبل از امروز
         avg_value = float(np.mean(values[:-1][-20:]))
         if avg_value <= 0:
             return FilterResult("T1", name, FilterStatus.FAIL, "میانگین حجم صفر")
         ratio = current_value / avg_value
-        detail = f"حجم: ${current_value/1e6:.2f}M | نسبت: ~{ratio:.1f}×"
-        if ratio >= settings.T1_MIN_VOLUME_RATIO:
+        detail = f"۲۴h: ${current_value/1e6:.2f}M | نسبت روزانه: ~{ratio:.1f}×"
+
+        hourly_ratio = None
+        if hourly_klines and len(hourly_klines) >= 24:
+            hvals = [float(k.get("value", 0) or 0) for k in hourly_klines]
+            recent = float(np.sum(hvals[-3:]))
+            base = float(np.mean(hvals[-24:-3])) if len(hvals) >= 6 else float(np.mean(hvals[:-3]))
+            if base > 0:
+                hourly_ratio = recent / (base * 3)
+                detail += f" | نسبت ۳h: ~{hourly_ratio:.1f}×"
+
+        passed = ratio >= settings.T1_MIN_VOLUME_RATIO
+        if not passed and hourly_ratio is not None:
+            passed = hourly_ratio >= settings.T1_MIN_VOLUME_RATIO
+
+        if passed:
             return FilterResult("T1", name, FilterStatus.PASS, detail)
         return FilterResult(
             "T1",
             name,
             FilterStatus.FAIL,
-            f"{detail} — کمتر از آستانه {settings.T1_MIN_VOLUME_RATIO:.0f}×",
+            f"{detail} — کمتر از {settings.T1_MIN_VOLUME_RATIO:.0f}×",
         )
     except Exception as e:
         return FilterResult("T1", name, FilterStatus.FAIL, str(e))
@@ -89,7 +139,11 @@ def evaluate_t2_rsi(hourly: dict[str, np.ndarray]) -> FilterResult:
     if settings.T2_RSI_MIN <= val <= settings.T2_RSI_MAX:
         return FilterResult("T2", name, FilterStatus.PASS, detail)
     if val > settings.T2_RSI_MAX:
-        return FilterResult("T2", name, FilterStatus.WARN, f"{detail} (اشباع خرید)")
+        if val <= settings.T2_RSI_EXTREME:
+            return FilterResult(
+                "T2", name, FilterStatus.WARN, f"{detail} (اشباع — مجاز محتاط)"
+            )
+        return FilterResult("T2", name, FilterStatus.FAIL, f"{detail} (اشباع شدید ≥{settings.T2_RSI_EXTREME:.0f})")
     return FilterResult("T2", name, FilterStatus.FAIL, f"{detail} (ضعیف)")
 
 
@@ -147,22 +201,25 @@ def evaluate_t6_cooldown(market: str, has_recent_signal: bool) -> FilterResult:
 
 
 def evaluate_t7_ema_trend(daily: dict[str, np.ndarray]) -> FilterResult:
-    name = "T7 — EMA20 > EMA50"
+    name = f"T7 — EMA{settings.T7_EMA_FAST} صعودی (۵ روز)"
     closes = daily["close"]
-    if len(closes) < settings.T7_EMA_SLOW + 5:
+    need = settings.T7_EMA_FAST + settings.T7_EMA_LOOKBACK_DAYS + 5
+    if len(closes) < need:
         return FilterResult("T7", name, FilterStatus.FAIL, "کندل روزانه کافی نیست")
-    ema20 = ind.ema_last(closes, settings.T7_EMA_FAST)
-    ema50 = ind.ema_last(closes, settings.T7_EMA_SLOW)
-    if ema20 is None or ema50 is None:
+    ema_series = ind.ema(closes, settings.T7_EMA_FAST)
+    if len(ema_series) < settings.T7_EMA_LOOKBACK_DAYS + 1:
         return FilterResult("T7", name, FilterStatus.FAIL, "EMA محاسبه نشد")
-    change_30d = None
-    if len(closes) >= 30:
-        change_30d = ((closes[-1] - closes[-30]) / closes[-30]) * 100
-    ch = f" | 30d: {change_30d:+.1f}%" if change_30d is not None else ""
-    detail = f"EMA20={ema20:.6g} EMA50={ema50:.6g}{ch}"
-    if ema20 > ema50:
+    ema_now = float(ema_series[-1])
+    ema_prev = float(ema_series[-1 - settings.T7_EMA_LOOKBACK_DAYS])
+    if ema_prev <= 0:
+        return FilterResult("T7", name, FilterStatus.FAIL, "EMA قبلی صفر")
+    rise_pct = ((ema_now - ema_prev) / ema_prev) * 100
+    detail = f"EMA20: {ema_prev:.6g} → {ema_now:.6g} ({rise_pct:+.2f}% در {settings.T7_EMA_LOOKBACK_DAYS}d)"
+    if rise_pct >= settings.T7_EMA_MIN_RISE_PCT:
         return FilterResult("T7", name, FilterStatus.PASS, detail)
-    return FilterResult("T7", name, FilterStatus.FAIL, f"روند نزولی — {detail}")
+    if rise_pct >= 0:
+        return FilterResult("T7", name, FilterStatus.WARN, f"{detail} — صعود خفیف")
+    return FilterResult("T7", name, FilterStatus.FAIL, f"EMA20 نزولی — {detail}")
 
 
 def evaluate_t8_atr_squeeze(hourly: dict[str, np.ndarray]) -> FilterResult:
@@ -199,14 +256,21 @@ def run_all_filters(
     hourly_klines: list[dict],
     daily_klines: list[dict],
     has_recent_signal: bool,
+    micro_klines: list[dict] | None = None,
 ) -> FilterReport:
     price = float(ticker.get("last", 0) or 0)
     hourly = ind.klines_to_arrays(hourly_klines)
     daily = ind.klines_to_arrays(daily_klines)
 
     report = FilterReport(market=market)
+    t0 = (
+        evaluate_t0_micro_momentum(micro_klines)
+        if micro_klines
+        else FilterResult("T0", "T0", FilterStatus.FAIL, "بدون داده 1min")
+    )
     report.results = [
-        evaluate_t1_volume_ratio(ticker, daily_klines),
+        t0,
+        evaluate_t1_volume_ratio(ticker, daily_klines, hourly_klines),
         evaluate_t2_rsi(hourly),
         evaluate_t3_macd(hourly),
         evaluate_t4_bollinger(hourly, price),
@@ -218,9 +282,65 @@ def run_all_filters(
     return report
 
 
+def counts_as_pass(result: FilterResult) -> bool:
+    if result.status == FilterStatus.PASS:
+        return True
+    if result.status != FilterStatus.WARN:
+        return False
+    if result.code == "T2" and settings.T2_ALLOW_OVERBOUGHT_WARN:
+        return True
+    if result.code == "T4" and settings.T4_ALLOW_MID_WARN:
+        return True
+    if result.code == "T7" and settings.T7_ALLOW_MILD_WARN:
+        return True
+    return False
+
+
+def _allowed_warn_codes() -> set[str]:
+    codes = set()
+    if settings.T2_ALLOW_OVERBOUGHT_WARN:
+        codes.add("T2")
+    if settings.T4_ALLOW_MID_WARN:
+        codes.add("T4")
+    if settings.T7_ALLOW_MILD_WARN:
+        codes.add("T7")
+    return codes
+
+
 def is_trade_allowed(report: FilterReport) -> bool:
-    """همه فیلترها باید PASS باشند؛ WARN در T2/T8 = رد."""
+    """
+    حداقل MIN_FILTERS_PASS از TOTAL_FILTERS؛ T0/T1/T2 اجباری.
+    T0 فقط PASS (مومنتوم ۲ دقیقه ۱–۲٪)؛ T2 WARN مجاز؛ سایر WARN رد.
+    """
+    by_code = {r.code: r for r in report.results}
+    required = settings.required_filter_codes
+
+    t0 = by_code.get("T0")
+    if not t0 or t0.status != FilterStatus.PASS:
+        return False
+
+    t1 = by_code.get("T1")
+    if not t1 or t1.status != FilterStatus.PASS:
+        return False
+
+    t2 = by_code.get("T2")
+    if not t2 or t2.status == FilterStatus.FAIL:
+        return False
+    if t2.status == FilterStatus.WARN and not settings.T2_ALLOW_OVERBOUGHT_WARN:
+        return False
+
+    for code in required:
+        if code not in by_code:
+            return False
+
+    pass_count = sum(1 for r in report.results if counts_as_pass(r))
+    if pass_count < settings.MIN_FILTERS_PASS:
+        return False
+
+    allowed_warn = _allowed_warn_codes()
     for r in report.results:
-        if r.status != FilterStatus.PASS:
+        if r.code in allowed_warn and r.status == FilterStatus.WARN:
+            continue
+        if r.status == FilterStatus.WARN:
             return False
     return True
